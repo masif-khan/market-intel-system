@@ -16,13 +16,12 @@
       --border:rgba(255,255,255,0.06);--border2:rgba(255,255,255,0.12);
       --text:#f0f0f8;--muted:#5a5a78;--muted2:#8888a8;
       --accent:#7c5cfc;--accent2:#a78bfa;
-      --green:#22c55e;--yellow:#eab308;--orange:#f97316;--red:#ef4444;--cyan:#06b6d4;
-      --font:'DM Sans',sans-serif;--display:'Syne',sans-serif;--mono:'JetBrains Mono',monospace;
+      --green:#22c55e;--yellow:#eab308;--red:#ef4444;--cyan:#06b6d4;
+      --font:'DM Sans',sans-serif;--mono:'JetBrains Mono',monospace;
     }
     html,body,#root{height:100%;}
     body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.5;overflow-x:hidden;}
     ::-webkit-scrollbar{width:4px;height:4px;}
-    ::-webkit-scrollbar-track{background:transparent;}
     ::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:99px;}
     a{color:var(--accent2);text-decoration:none;}
     @keyframes spin{to{transform:rotate(360deg)}}
@@ -34,16 +33,18 @@
 <script type="text/babel">
 const { useState, useRef, useCallback } = React;
 
+// ── Helpers ───────────────────────────────────────────────────
 const fmt = n => n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(0)+"K":String(n||0);
 const scoreColor = s => s>=75?"#22c55e":s>=50?"#eab308":"#ef4444";
-const LABEL_CLS = {"Hot Opportunity":"hot","Strong Signal":"strong","Worth Watching":"watch","Saturated":"sat","Too Early":"early"};
+const LABEL_CLS  = {"Hot Opportunity":"hot","Strong Signal":"strong","Worth Watching":"watch","Saturated":"sat","Too Early":"early"};
 const ACTION_CLS = {"Publish Similar Game":"pub","Write Content Now":"write","Monitor Weekly":"mon","Skip":"skip"};
-const TREND_COLOR = {Exploding:"#22c55e",Rising:"#a3e635",Stable:"#eab308",Declining:"#ef4444"};
+const TREND_COL  = {Exploding:"#22c55e",Rising:"#a3e635",Stable:"#eab308",Declining:"#ef4444"};
 
-async function callClaude(apiKey, system, user) {
+// ── Claude API ────────────────────────────────────────────────
+async function callClaude(key, system, user) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST",
-    headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    headers:{"Content-Type":"application/json","x-api-key":key,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1500,system,messages:[{role:"user",content:user}]}),
   });
   if(!res.ok){const e=await res.json();throw new Error(e.error?.message||`HTTP ${res.status}`);}
@@ -53,97 +54,177 @@ async function callClaude(apiKey, system, user) {
   return JSON.parse(text.trim());
 }
 
-const IOS_CATS=[["6014","Games"],["7001","Action"],["7003","Arcade"],["7004","Board"],["7005","Card"],["7009","Puzzle"],["7010","Racing"],["7011","RPG"],["7012","Simulation"],["7013","Sports"],["7014","Strategy"],["7015","Trivia"],["7016","Word"]];
-const GP_CATS=[["GAME","Games"],["GAME_ACTION","Action"],["GAME_ARCADE","Arcade"],["GAME_CASUAL","Casual"],["GAME_PUZZLE","Puzzle"],["GAME_STRATEGY","Strategy"],["GAME_SIMULATION","Simulation"],["GAME_SPORTS","Sports"],["GAME_WORD","Word"],["GAME_TRIVIA","Trivia"],["GAME_CARD","Card"],["GAME_BOARD","Board"],["GAME_ADVENTURE","Adventure"]];
+// ── App Store Fetch (iTunes RSS — free, no key needed) ─────────
+const IOS_CATS = [
+  ["6014","Games"],["7001","Action"],["7003","Arcade"],["7004","Board"],
+  ["7005","Card"],["7009","Puzzle"],["7010","Racing"],["7011","RPG"],
+  ["7012","Simulation"],["7013","Sports"],["7014","Strategy"],["7015","Trivia"],["7016","Word"]
+];
 
-async function fetchAppStore(onLog){
-  const seen=new Set();const results=[];
+async function fetchAppStore(onLog) {
+  const seen=new Set(); const results=[];
   for(const [id,name] of IOS_CATS){
     try{
-      const r=await fetch(`https://itunes.apple.com/us/rss/topfreeapplications/limit=100/genre=${id}/json`);
-      if(!r.ok)continue;
-      const data=await r.json();
-      for(const e of(data?.feed?.entry||[])){
-        const appId=e?.id?.attributes?.["im:id"]||"";
-        if(!appId||seen.has(appId))continue;
+      const r = await fetch(`https://itunes.apple.com/us/rss/topfreeapplications/limit=100/genre=${id}/json`);
+      if(!r.ok) continue;
+      const data = await r.json();
+      const entries = data?.feed?.entry || [];
+      for(const e of entries){
+        const appId = e?.id?.attributes?.["im:id"]||"";
+        if(!appId||seen.has(appId)) continue;
         seen.add(appId);
         const rel=(e?.["im:releaseDate"]?.label||"").slice(0,10);
-        results.push({title:e?.["im:name"]?.label||"Unknown",app_id:appId,platform:"app_store",category:name,store_url:`https://apps.apple.com/us/app/id${appId}`,release_date:rel,age_days:rel?Math.floor((Date.now()-new Date(rel))/86400000):999});
+        const ageDays=rel?Math.floor((Date.now()-new Date(rel))/86400000):999;
+        results.push({
+          title:       e?.["im:name"]?.label||"Unknown",
+          app_id:      appId,
+          platform:    "app_store",
+          category:    name,
+          store_url:   `https://apps.apple.com/us/app/id${appId}`,
+          release_date:rel,
+          age_days:    ageDays,
+          icon:        e?.["im:image"]?.[2]?.label||"",
+        });
       }
-      onLog(`[iOS] ${name}: ${(data?.feed?.entry||[]).length} apps`,"info");
+      onLog(`[iOS] ${name}: ${entries.length} apps`,"info");
     }catch(ex){onLog(`[iOS] ${name}: ${ex.message}`,"warn");}
-    await new Promise(r=>setTimeout(r,250));
+    await new Promise(r=>setTimeout(r,200));
   }
   return results;
 }
 
-async function fetchGPlay(onLog){
-  const seen=new Set();const results=[];
-  for(const [catId,name] of GP_CATS){
-    try{
-      const url=`https://play.google.com/store/games/category/${catId}?hl=en&gl=US`;
-      const r=await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,{signal:AbortSignal.timeout(10000)});
-      if(!r.ok)continue;
-      const data=await r.json();
-      const matches=[...(data.contents||"").matchAll(/details\?id=([a-zA-Z0-9._]{5,})/g)];
-      let n=0;
-      for(const m of matches){
-        const pid=m[1];
-        if(!pid||seen.has(pid))continue;
-        seen.add(pid);n++;
-        results.push({title:pid.split(".").slice(-1)[0].replace(/([A-Z])/g," $1").trim(),package_id:pid,platform:"google_play",category:name,store_url:`https://play.google.com/store/apps/details?id=${pid}`,age_days:45});
-        if(n>=25)break;
-      }
-      onLog(`[GP] ${name}: ${n} apps`,"info");
-    }catch(ex){onLog(`[GP] ${name}: ${ex.message}`,"warn");}
-    await new Promise(r=>setTimeout(r,350));
-  }
-  return results;
-}
-
-async function enrichIOS(games,cfg,onLog){
-  const qualified=[];
+// ── Enrich iOS via iTunes Lookup ──────────────────────────────
+async function enrichIOS(games, onLog) {
+  const enriched=[];
   for(let i=0;i<games.length;i+=20){
     const batch=games.slice(i,i+20);
     const ids=batch.map(g=>g.app_id).join(",");
     try{
       const r=await fetch(`https://itunes.apple.com/lookup?id=${ids}&country=us`);
-      if(!r.ok)continue;
+      if(!r.ok) continue;
       const data=await r.json();
       for(const info of(data.results||[])){
         const g=batch.find(x=>x.app_id===String(info.trackId));
-        if(!g)continue;
+        if(!g) continue;
         const reviews=info.userRatingCount||0;
         const installs=reviews*200;
         const rel=(info.releaseDate||"").slice(0,10);
         const age=rel?Math.floor((Date.now()-new Date(rel))/86400000):g.age_days;
         const daily=age>0?Math.floor(installs/age):0;
-        if(age>cfg.maxAge||installs<cfg.minInstalls||daily<cfg.minDaily)continue;
-        qualified.push({...g,title:info.trackName||g.title,installs,installs_estimated:true,release_date:rel,age_days:age,rating:info.averageUserRating||0,reviews,daily_installs_est:daily,description:(info.description||"").slice(0,300)});
+        enriched.push({
+          ...g,
+          title:       info.trackName||g.title,
+          installs,
+          daily_installs_est: daily,
+          release_date:rel,
+          age_days:    age,
+          rating:      info.averageUserRating||0,
+          reviews,
+          description: (info.description||"").slice(0,400),
+          genre:       info.primaryGenreName||g.category,
+          developer:   info.artistName||"",
+          price:       info.price||0,
+          size:        info.fileSizeBytes||0,
+          installs_estimated: true,
+        });
       }
     }catch(ex){onLog(`[enrich iOS] ${ex.message}`,"warn");}
-    await new Promise(r=>setTimeout(r,400));
+    await new Promise(r=>setTimeout(r,350));
   }
-  onLog(`iOS qualified: ${qualified.length}`,"success");
-  return qualified;
+  onLog(`iOS enriched: ${enriched.length} apps`,"success");
+  return enriched;
 }
 
-function prepGPlay(games){return games.slice(0,50).map(g=>({...g,installs:0,reviews:0,rating:0,daily_installs_est:0,description:`${g.category} game on Google Play`}));}
+// ── Google Play via RapidAPI ──────────────────────────────────
+const GP_CATS = [
+  "GAME","GAME_ACTION","GAME_ARCADE","GAME_CASUAL","GAME_PUZZLE",
+  "GAME_STRATEGY","GAME_SIMULATION","GAME_SPORTS","GAME_WORD",
+  "GAME_TRIVIA","GAME_CARD","GAME_BOARD","GAME_ADVENTURE","GAME_ROLE_PLAYING"
+];
 
-const SYS_GAME=`You are a mobile games market intelligence analyst. Analyze games and return structured JSON. Respond ONLY with valid JSON, no markdown.`;
-const SYS_TREND=`You are a mobile games market trend analyst. Respond ONLY with valid JSON, no markdown.`;
+async function fetchGPlay(rapidKey, onLog) {
+  if(!rapidKey){
+    onLog("[GP] No RapidAPI key — skipping Google Play","warn");
+    return [];
+  }
+  const seen=new Set(); const results=[];
+  for(const cat of GP_CATS){
+    try{
+      const r=await fetch(
+        `https://google-play-scraper1.p.rapidapi.com/apps/top-charts?category=${cat}&chart=topselling_free&country=us&num=50&lang=en`,
+        {headers:{"X-RapidAPI-Key":rapidKey,"X-RapidAPI-Host":"google-play-scraper1.p.rapidapi.com"}}
+      );
+      if(!r.ok){onLog(`[GP] ${cat}: HTTP ${r.status}`,"warn");continue;}
+      const data=await r.json();
+      const apps=data?.results||data?.apps||data||[];
+      let n=0;
+      for(const app of apps){
+        const pid=app.appId||app.app_id||app.packageName||"";
+        if(!pid||seen.has(pid)) continue;
+        seen.add(pid); n++;
+        results.push({
+          title:       app.title||app.name||pid,
+          package_id:  pid,
+          platform:    "google_play",
+          category:    cat.replace("GAME_","").replace("GAME","Games"),
+          store_url:   `https://play.google.com/store/apps/details?id=${pid}`,
+          installs:    app.installs||app.minInstalls||0,
+          daily_installs_est: 0,
+          rating:      app.score||app.rating||0,
+          reviews:     app.ratings||app.reviews||0,
+          age_days:    45,
+          description: (app.summary||app.description||"").slice(0,400),
+          developer:   app.developer||"",
+          icon:        app.icon||"",
+          release_date:"",
+        });
+      }
+      onLog(`[GP] ${cat}: ${n} apps`,"info");
+    }catch(ex){onLog(`[GP] ${cat}: ${ex.message}`,"warn");}
+    await new Promise(r=>setTimeout(r,300));
+  }
+  onLog(`Google Play total: ${results.length} apps`,"success");
+  return results;
+}
 
-const gamePrompt=g=>`Analyze this mobile game. Return ONLY this JSON, no extra text:
-{"opportunity_score":<1-100>,"trend_score":<1-100>,"competition_score":<1-100>,"monetization_score":<1-100>,"opportunity_label":"<Hot Opportunity|Strong Signal|Worth Watching|Saturated|Too Early>","trend_direction":"<Exploding|Rising|Stable|Declining>","why_opportunity":"<2 sentences>","risk_factors":"<1 sentence>","aso_keywords":["<kw1>","<kw2>","<kw3>","<kw4>","<kw5>","<kw6>","<kw7>"],"competitor_gap":"<1 sentence>","target_audience":"<profile>","content_angle":"<best angle>","monetization_model":"<ads|IAP|hybrid|subscription>","similar_games":["<g1>","<g2>","<g3>"],"recommended_action":"<Publish Similar Game|Write Content Now|Monitor Weekly|Skip>","one_line_summary":"<punchy sentence>"}
-Title:${g.title} Platform:${g.platform} Category:${g.category} Installs:${g.installs?fmt(g.installs):"unknown"} Daily:${g.daily_installs_est||"unknown"} Age:${g.age_days}days Rating:${g.rating||"unknown"} Desc:${g.description||"no description"}`;
+// ── Claude Analysis (Option B — analyzes ALL apps) ────────────
+const SYS_GAME=`You are a senior mobile games market intelligence analyst with 15+ years experience in ASO, publishing, and market trends.
+Analyze mobile games and return structured JSON intelligence. You can estimate market signals even without exact install data — use category position, rating, reviews, description quality, and release timing.
+Respond ONLY with valid JSON. No markdown, no extra text.`;
 
-const trendPrompt=games=>`Analyze these ${games.length} trending mobile games. Return ONLY this JSON:
-{"hot_categories":[{"category":"<n>","momentum":"<Exploding|Rising|Stable>","game_count":<n>,"avg_daily_installs":<n>,"insight":"<1-2 sentences>"}],"emerging_themes":[{"theme":"<name>","evidence":"<games>","opportunity":"<why now>"}],"market_gaps":[{"gap":"<niche>","evidence":"<why>","action":"<game type>"}],"top_opportunities":[{"title":"<game>","reason":"<why>"}],"keyword_trends":["<kw1>","<kw2>","<kw3>","<kw4>","<kw5>","<kw6>","<kw7>","<kw8>"],"audience_shifts":"<1-2 sentences>","platform_differences":"<1-2 sentences>","market_summary":"<3-4 sentence summary>"}
-GAMES:${JSON.stringify(games.map(g=>({title:g.title,platform:g.platform,category:g.category,installs:g.installs,daily:g.daily_installs_est,age:g.age_days,label:g.analysis?.opportunity_label,score:g.composite_score})))}`;
+const SYS_TREND=`You are a mobile games market trend analyst. Identify macro trends, gaps, and opportunities from collections of game data.
+Respond ONLY with valid JSON. No markdown, no extra text.`;
 
-const computeScore=a=>!a?0:Math.round(Math.max(0,Math.min(100,(a.opportunity_score||0)*0.40+(a.trend_score||0)*0.30+(a.monetization_score||0)*0.20-(a.competition_score||0)*0.10)));
+const gamePrompt=g=>`Analyze this mobile game's market opportunity. Even if install data is missing, estimate from category signals, rating, reviews, and description.
 
-const badgeStyles={
+Return ONLY this exact JSON:
+{"opportunity_score":<1-100>,"trend_score":<1-100>,"competition_score":<1-100>,"monetization_score":<1-100>,"opportunity_label":"<Hot Opportunity|Strong Signal|Worth Watching|Saturated|Too Early>","trend_direction":"<Exploding|Rising|Stable|Declining>","why_opportunity":"<2 sentences>","risk_factors":"<1 sentence>","aso_keywords":["<kw1>","<kw2>","<kw3>","<kw4>","<kw5>","<kw6>","<kw7>"],"competitor_gap":"<1 sentence>","target_audience":"<profile and age>","content_angle":"<best marketing angle>","monetization_model":"<ads|IAP|hybrid|subscription>","similar_games":["<g1>","<g2>","<g3>"],"recommended_action":"<Publish Similar Game|Write Content Now|Monitor Weekly|Skip>","one_line_summary":"<punchy single sentence>"}
+
+GAME:
+Title: ${g.title}
+Platform: ${g.platform}
+Category: ${g.category}
+Position in top charts: top ${g.chartPosition||"100"}
+Installs: ${g.installs?fmt(g.installs):"not available — estimate from signals"}
+Daily est: ${g.daily_installs_est?fmt(g.daily_installs_est):"estimate needed"}
+Age: ${g.age_days||"unknown"} days since release
+Rating: ${g.rating||"unknown"}/5 (${g.reviews?fmt(g.reviews)+" reviews":"no review data"})
+Developer: ${g.developer||"unknown"}
+Description: ${g.description||"no description available"}`;
+
+const trendPrompt=games=>`Analyze these ${games.length} trending mobile games and return market intelligence.
+
+Return ONLY this exact JSON:
+{"hot_categories":[{"category":"<n>","momentum":"<Exploding|Rising|Stable>","game_count":<n>,"avg_daily_installs":<n>,"insight":"<1-2 sentences>"}],"emerging_themes":[{"theme":"<name>","evidence":"<games>","opportunity":"<why now>"}],"market_gaps":[{"gap":"<niche>","evidence":"<why>","action":"<game type>"}],"top_opportunities":[{"title":"<game>","reason":"<why>"}],"keyword_trends":["<kw1>","<kw2>","<kw3>","<kw4>","<kw5>","<kw6>","<kw7>","<kw8>"],"audience_shifts":"<1-2 sentences>","platform_differences":"<1-2 sentences>","market_summary":"<3-4 sentence executive summary>"}
+
+GAMES: ${JSON.stringify(games.map((g,i)=>({rank:i+1,title:g.title,platform:g.platform,category:g.category,installs:g.installs,daily:g.daily_installs_est,age:g.age_days,rating:g.rating,label:g.analysis?.opportunity_label,score:g.composite_score})))}`;
+
+const computeScore=a=>!a?0:Math.round(Math.max(0,Math.min(100,
+  (a.opportunity_score||0)*0.40+(a.trend_score||0)*0.30+(a.monetization_score||0)*0.20-(a.competition_score||0)*0.10
+)));
+
+// ── Badge ─────────────────────────────────────────────────────
+const BS={
   hot:{background:"rgba(34,197,94,0.12)",color:"#4ade80",border:"1px solid rgba(34,197,94,0.25)"},
   strong:{background:"rgba(163,230,53,0.1)",color:"#a3e635",border:"1px solid rgba(163,230,53,0.25)"},
   watch:{background:"rgba(234,179,8,0.1)",color:"#fbbf24",border:"1px solid rgba(234,179,8,0.25)"},
@@ -156,11 +237,9 @@ const badgeStyles={
   mon:{background:"rgba(234,179,8,0.1)",color:"#fbbf24",border:"1px solid rgba(234,179,8,0.2)"},
   skip:{background:"rgba(107,114,128,0.08)",color:"#9ca3af",border:"1px solid rgba(107,114,128,0.2)"},
 };
-
 const Badge=({type,children,style={}})=>(
-  <span style={{display:"inline-flex",alignItems:"center",padding:"3px 9px",borderRadius:99,fontSize:11,fontWeight:600,whiteSpace:"nowrap",...(badgeStyles[type]||badgeStyles.early),...style}}>{children}</span>
+  <span style={{display:"inline-flex",alignItems:"center",padding:"3px 9px",borderRadius:99,fontSize:11,fontWeight:600,whiteSpace:"nowrap",...(BS[type]||BS.early),...style}}>{children}</span>
 );
-
 const ScoreMeter=({score,size="sm"})=>(
   <div style={{display:"flex",alignItems:"center",gap:8}}>
     <div style={{flex:1,height:size==="lg"?8:4,background:"var(--bg4)",borderRadius:99,overflow:"hidden"}}>
@@ -169,103 +248,154 @@ const ScoreMeter=({score,size="sm"})=>(
     <span style={{fontSize:size==="lg"?16:12,fontWeight:700,fontFamily:"var(--mono)",color:scoreColor(score),minWidth:32}}>{score}</span>
   </div>
 );
-
-const Spinner=({size=14})=>(
-  <div style={{width:size,height:size,border:`2px solid rgba(255,255,255,0.15)`,borderTopColor:"#fff",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>
-);
-
+const Spinner=({size=14})=><div style={{width:size,height:size,border:`2px solid rgba(255,255,255,0.15)`,borderTopColor:"#fff",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/>;
 const KwTag=({primary,children})=>(
   <span style={{padding:"3px 10px",borderRadius:6,fontSize:11,fontWeight:500,fontFamily:"var(--mono)",background:primary?"rgba(124,92,252,0.12)":"var(--bg3)",color:primary?"#c4b5fd":"var(--muted2)",border:primary?"1px solid rgba(124,92,252,0.25)":"1px solid var(--border)"}}>{children}</span>
 );
 
+// ── Shared styles ─────────────────────────────────────────────
+const C={
+  card:{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:12,padding:20},
+  th:{textAlign:"left",padding:"9px 13px",fontSize:11,fontWeight:600,color:"var(--muted2)",textTransform:"uppercase",letterSpacing:"0.5px",borderBottom:"1px solid var(--border)",background:"var(--bg3)",whiteSpace:"nowrap"},
+  td:{padding:"11px 13px",borderBottom:"1px solid var(--border)",verticalAlign:"top",lineHeight:1.5},
+  secTitle:{fontFamily:"'Syne',sans-serif",fontSize:15,fontWeight:700,marginBottom:16,paddingBottom:10,borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:8},
+  btn:{background:"var(--accent)",color:"#fff",border:"none",padding:"10px 20px",borderRadius:8,fontWeight:600,fontSize:13,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:8},
+  btnSec:{background:"var(--bg3)",color:"var(--text)",border:"1px solid var(--border2)",padding:"9px 18px",borderRadius:8,fontWeight:500,fontSize:13,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:8},
+  btnDanger:{background:"rgba(239,68,68,0.1)",color:"var(--red)",border:"1px solid rgba(239,68,68,0.25)",padding:"9px 18px",borderRadius:8,fontWeight:500,fontSize:13,cursor:"pointer"},
+  input:{width:"100%",padding:"9px 13px",background:"var(--bg3)",border:"1px solid var(--border2)",borderRadius:8,color:"var(--text)",fontFamily:"var(--mono)",fontSize:13,outline:"none"},
+  select:{padding:"7px 12px",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:8,color:"var(--text)",fontSize:13,outline:"none",cursor:"pointer"},
+  pageTitle:{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:800,marginBottom:6,letterSpacing:"-0.5px"},
+  pageSub:{fontSize:13,color:"var(--muted2)",marginBottom:24},
+};
+
+// ── App ───────────────────────────────────────────────────────
 function App(){
-  const [apiKey,setApiKey]=useState(()=>localStorage.getItem("mi_key")||"");
-  const [keySaved,setKeySaved]=useState(()=>!!localStorage.getItem("mi_key"));
-  const [page,setPage]=useState("dashboard");
-  const [running,setRunning]=useState(false);
-  const [progress,setProgress]=useState(0);
-  const [steps,setSteps]=useState([]);
-  const [logs,setLogs]=useState([]);
-  const [results,setResults]=useState(()=>{try{return JSON.parse(localStorage.getItem("mi_results")||"null");}catch{return null;}});
-  const [selected,setSelected]=useState(null);
-  const [cfg,setCfg]=useState({maxAge:90,minInstalls:500000,minDaily:5000});
-  const [fLabel,setFLabel]=useState("all");
-  const [fPlatform,setFPlatform]=useState("all");
-  const [fAction,setFAction]=useState("all");
-  const [sortBy,setSortBy]=useState("composite_score");
-  const logRef=useRef(null);
+  const [apiKey,   setApiKey]   = useState(()=>localStorage.getItem("mi_key")||"");
+  const [rapidKey, setRapidKey] = useState(()=>localStorage.getItem("mi_rapid")||"");
+  const [keySaved, setKeySaved] = useState(()=>!!localStorage.getItem("mi_key"));
+  const [page,     setPage]     = useState("dashboard");
+  const [running,  setRunning]  = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [steps,    setSteps]    = useState([]);
+  const [logs,     setLogs]     = useState([]);
+  const [results,  setResults]  = useState(()=>{try{return JSON.parse(localStorage.getItem("mi_results")||"null");}catch{return null;}});
+  const [selected, setSelected] = useState(null);
+  const [fLabel,   setFLabel]   = useState("all");
+  const [fPlatform,setFPlatform]= useState("all");
+  const [fAction,  setFAction]  = useState("all");
+  const [sortBy,   setSortBy]   = useState("composite_score");
+  const [maxGames, setMaxGames] = useState(80);
+  const logRef = useRef(null);
 
   const log=useCallback((msg,type="muted")=>{
     const ts=new Date().toLocaleTimeString("en",{hour12:false,hour:"2-digit",minute:"2-digit",second:"2-digit"});
-    setLogs(l=>[...l.slice(-100),{msg:`[${ts}] ${msg}`,type}]);
+    setLogs(l=>[...l.slice(-120),{msg:`[${ts}] ${msg}`,type}]);
     setTimeout(()=>{if(logRef.current)logRef.current.scrollTop=logRef.current.scrollHeight;},30);
   },[]);
 
   const updStep=(i,status)=>setSteps(s=>{const n=[...s];n[i]={...n[i],status};return n;});
-  const saveKey=()=>{localStorage.setItem("mi_key",apiKey);setKeySaved(true);};
+  const saveKeys=()=>{localStorage.setItem("mi_key",apiKey);if(rapidKey)localStorage.setItem("mi_rapid",rapidKey);setKeySaved(true);};
 
   const runPipeline=async()=>{
     setRunning(true);setProgress(0);setLogs([]);
-    setSteps(["Fetching App Store games","Fetching Google Play games","Enriching & filtering","Claude AI analysis","Macro trend analysis","Saving dashboard"].map(label=>({label,status:"pending"})));
-    const key=localStorage.getItem("mi_key");
+    setSteps([
+      "Fetching App Store games",
+      "Fetching Google Play games",
+      "Enriching app details",
+      "Claude AI analysis",
+      "Macro trend analysis",
+      "Saving dashboard",
+    ].map(label=>({label,status:"pending"})));
+    const aKey=localStorage.getItem("mi_key");
+    const rKey=localStorage.getItem("mi_rapid")||"";
+
     try{
+      // Step 1 — App Store
       updStep(0,"active");setProgress(5);
       log("Fetching App Store top charts...","info");
       const iosRaw=await fetchAppStore(log);
-      log(`App Store: ${iosRaw.length} apps found`,"success");
-      updStep(0,"done");setProgress(18);
+      log(`App Store: ${iosRaw.length} apps fetched`,"success");
+      updStep(0,"done");setProgress(15);
 
+      // Step 2 — Google Play
       updStep(1,"active");
-      log("Fetching Google Play via proxy...","info");
-      const gpRaw=await fetchGPlay(log);
-      log(`Google Play: ${gpRaw.length} apps found`,"success");
-      updStep(1,"done");setProgress(32);
+      let gpRaw=[];
+      if(rKey){
+        log("Fetching Google Play via RapidAPI...","info");
+        gpRaw=await fetchGPlay(rKey,log);
+        log(`Google Play: ${gpRaw.length} apps fetched`,"success");
+      } else {
+        log("[GP] No RapidAPI key — add it in Settings to enable Google Play data","warn");
+      }
+      updStep(1,"done");setProgress(28);
 
+      // Step 3 — Enrich
       updStep(2,"active");
-      log("Enriching iOS apps...","info");
-      const iosQ=await enrichIOS(iosRaw,cfg,log);
-      const gpQ=prepGPlay(gpRaw);
-      const all=[...iosQ,...gpQ];
-      log(`Total going into AI analysis: ${all.length}`,"success");
-      updStep(2,"done");setProgress(45);
+      log("Enriching iOS apps via iTunes API...","info");
+      const iosEnriched=await enrichIOS(iosRaw,log);
+      // Mark chart positions
+      const allApps=[
+        ...iosEnriched.map((g,i)=>({...g,chartPosition:i+1})),
+        ...gpRaw.map((g,i)=>({...g,chartPosition:i+1})),
+      ];
+      // OPTION B: Send ALL apps to Claude — no install filter
+      // Limit to maxGames to control API cost
+      const toAnalyze=allApps.slice(0,maxGames);
+      log(`Total apps going to Claude: ${toAnalyze.length} (of ${allApps.length} fetched)`,"success");
+      updStep(2,"done");setProgress(38);
 
+      // Step 4 — Claude per game (Option B: ALL games analyzed)
       updStep(3,"active");
       const analyzed=[];
-      for(let i=0;i<all.length;i+=4){
-        const batch=all.slice(i,i+4);
+      const BATCH=5;
+      for(let i=0;i<toAnalyze.length;i+=BATCH){
+        const batch=toAnalyze.slice(i,i+BATCH);
         await Promise.all(batch.map(async game=>{
           try{
-            const analysis=await callClaude(key,SYS_GAME,gamePrompt(game));
+            const analysis=await callClaude(aKey,SYS_GAME,gamePrompt(game));
             const composite_score=computeScore(analysis);
             analyzed.push({...game,analysis,composite_score,analyzed_at:new Date().toISOString()});
-            log(`✓ ${game.title} → ${analysis.opportunity_label} [${composite_score}]`,"success");
+            log(`✓ ${game.title} [${game.platform==="app_store"?"iOS":"GP"}] → ${analysis.opportunity_label} [${composite_score}]`,"success");
           }catch(ex){
             log(`✗ ${game.title}: ${ex.message}`,"warn");
             analyzed.push({...game,analysis:null,composite_score:0});
           }
         }));
-        setProgress(45+Math.round((i/all.length)*38));
-        await new Promise(r=>setTimeout(r,700));
+        setProgress(38+Math.round((i/toAnalyze.length)*42));
+        await new Promise(r=>setTimeout(r,600));
       }
       analyzed.sort((a,b)=>b.composite_score-a.composite_score);
-      updStep(3,"done");setProgress(85);
+      updStep(3,"done");setProgress(82);
 
+      // Step 5 — Trend analysis
       updStep(4,"active");
       log("Running macro trend analysis...","info");
       let trend_report={};
+      const valid=analyzed.filter(g=>g.analysis);
       try{
-        trend_report=await callClaude(key,SYS_TREND,trendPrompt(analyzed.filter(g=>g.analysis)));
+        trend_report=await callClaude(aKey,SYS_TREND,trendPrompt(valid));
         log("Trend report complete","success");
       }catch(ex){log(`Trend: ${ex.message}`,"warn");}
       updStep(4,"done");setProgress(96);
 
+      // Step 6 — Save
       updStep(5,"active");
-      const final={generated_at:new Date().toISOString(),total_scanned:iosRaw.length+gpRaw.length,total_analyzed:analyzed.length,hot_count:analyzed.filter(g=>g.analysis?.opportunity_label==="Hot Opportunity").length,strong_count:analyzed.filter(g=>g.analysis?.opportunity_label==="Strong Signal").length,trend_report,games:analyzed};
+      const final={
+        generated_at:    new Date().toISOString(),
+        total_scanned:   allApps.length,
+        total_analyzed:  analyzed.length,
+        hot_count:       analyzed.filter(g=>g.analysis?.opportunity_label==="Hot Opportunity").length,
+        strong_count:    analyzed.filter(g=>g.analysis?.opportunity_label==="Strong Signal").length,
+        has_gplay:       gpRaw.length>0,
+        trend_report,
+        games:           analyzed,
+      };
       localStorage.setItem("mi_results",JSON.stringify(final));
       setResults(final);
       updStep(5,"done");setProgress(100);
-      log("Pipeline complete!","success");
+      log(`Pipeline complete! ${valid.length} games analyzed.`,"success");
       setTimeout(()=>setPage("dashboard"),1200);
+
     }catch(ex){log(`FATAL: ${ex.message}`,"error");}
     finally{setRunning(false);}
   };
@@ -285,7 +415,7 @@ function App(){
   });
   const trend=results?.trend_report||{};
 
-  const sideItems=[
+  const NAV=[
     {id:"dashboard",icon:"🏠",label:"Dashboard"},
     {id:"run",icon:"▶",label:"Run Pipeline"},
     null,
@@ -296,16 +426,7 @@ function App(){
     {id:"settings",icon:"⚙",label:"Settings"},
   ];
 
-  const th={textAlign:"left",padding:"9px 13px",fontSize:11,fontWeight:600,color:"var(--muted2)",textTransform:"uppercase",letterSpacing:"0.5px",borderBottom:"1px solid var(--border)",background:"var(--bg3)",whiteSpace:"nowrap"};
-  const td={padding:"11px 13px",borderBottom:"1px solid var(--border)",verticalAlign:"top",lineHeight:1.5};
-  const card={background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:12,padding:20};
-  const secTitle={fontFamily:"'Syne',sans-serif",fontSize:15,fontWeight:700,marginBottom:16,paddingBottom:10,borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:8};
-  const btnPrimary={background:"var(--accent)",color:"#fff",border:"none",padding:"10px 20px",borderRadius:8,fontWeight:600,fontSize:13,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:8};
-  const btnDanger={background:"rgba(239,68,68,0.1)",color:"var(--red)",border:"1px solid rgba(239,68,68,0.25)",padding:"9px 18px",borderRadius:8,fontWeight:500,fontSize:13,cursor:"pointer"};
-  const inputStyle={width:"100%",padding:"9px 13px",background:"var(--bg3)",border:"1px solid var(--border2)",borderRadius:8,color:"var(--text)",fontFamily:"var(--mono)",fontSize:13,outline:"none"};
-  const selectStyle={padding:"7px 12px",background:"var(--bg3)",border:"1px solid var(--border)",borderRadius:8,color:"var(--text)",fontSize:13,outline:"none",cursor:"pointer"};
-
-  return (
+  return(
     <div style={{display:"flex",flexDirection:"column",minHeight:"100vh"}}>
 
       {/* Header */}
@@ -319,7 +440,7 @@ function App(){
         </div>
         <div style={{display:"flex",alignItems:"center",gap:14}}>
           {results&&<span style={{fontSize:11,color:"var(--muted2)",fontFamily:"var(--mono)"}}>Last run: {new Date(results.generated_at).toLocaleString()}</span>}
-          <div style={{width:7,height:7,borderRadius:"50%",background:results?"#22c55e":"var(--muted)",boxShadow:results?"0 0 8px #22c55e":"none",animation:results?"pulse 2s infinite":"none"}}/>
+          <div style={{width:7,height:7,borderRadius:"50%",background:results?"#22c55e":"var(--muted)",boxShadow:results?"0 0 8px #22c55e":"none"}}/>
           <span style={{fontSize:12,color:"var(--muted2)"}}>{results?"Data ready":"No data"}</span>
         </div>
       </div>
@@ -327,31 +448,36 @@ function App(){
       <div style={{display:"flex",flex:1}}>
         {/* Sidebar */}
         <div style={{width:210,background:"var(--bg2)",borderRight:"1px solid var(--border)",padding:"16px 0",position:"sticky",top:57,height:"calc(100vh - 57px)",overflowY:"auto",flexShrink:0}}>
-          {sideItems.map((item,i)=>item===null?(
-            <div key={i} style={{height:1,background:"var(--border)",margin:"10px 16px"}}/>
-          ):(
-            <div key={item.id} onClick={()=>setPage(item.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 16px",cursor:"pointer",fontSize:13,fontWeight:500,borderLeft:"2px solid transparent",transition:"all 0.15s",color:page===item.id?"var(--accent2)":"var(--muted2)",background:page===item.id?"rgba(124,92,252,0.08)":"transparent",borderLeftColor:page===item.id?"var(--accent)":"transparent"}}>
-              <span style={{fontSize:14,width:18,textAlign:"center"}}>{item.icon}</span>
-              {item.label}
-              {item.id==="opportunities"&&results&&<span style={{marginLeft:"auto",fontSize:10,background:"rgba(124,92,252,0.15)",color:"var(--accent2)",padding:"1px 7px",borderRadius:99}}>{filtered.length}</span>}
-            </div>
-          ))}
+          {NAV.map((item,i)=>item===null
+            ?<div key={i} style={{height:1,background:"var(--border)",margin:"10px 16px"}}/>
+            :<div key={item.id} onClick={()=>setPage(item.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 16px",cursor:"pointer",fontSize:13,fontWeight:500,borderLeft:"2px solid transparent",transition:"all 0.15s",color:page===item.id?"var(--accent2)":"var(--muted2)",background:page===item.id?"rgba(124,92,252,0.08)":"transparent",borderLeftColor:page===item.id?"var(--accent)":"transparent"}}>
+                <span style={{fontSize:14,width:18,textAlign:"center"}}>{item.icon}</span>
+                {item.label}
+                {item.id==="opportunities"&&results&&<span style={{marginLeft:"auto",fontSize:10,background:"rgba(124,92,252,0.15)",color:"var(--accent2)",padding:"1px 7px",borderRadius:99}}>{filtered.length}</span>}
+              </div>
+          )}
         </div>
 
-        {/* Main content */}
+        {/* Content */}
         <div style={{flex:1,padding:28,overflowX:"hidden"}}>
 
           {/* API KEY GATE */}
           {!keySaved&&(
             <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"70vh"}}>
-              <div style={{...card,maxWidth:520,padding:36}}>
+              <div style={{...C.card,maxWidth:540,padding:36}}>
                 <div style={{fontSize:42,marginBottom:16}}>📊</div>
                 <div style={{fontFamily:"'Syne',sans-serif",fontSize:26,fontWeight:800,marginBottom:8,letterSpacing:"-0.5px"}}>Market Intel System</div>
-                <p style={{color:"var(--muted2)",fontSize:14,marginBottom:28,lineHeight:1.7}}>Enter your Anthropic API key to analyze mobile game market opportunities. Your key stays in your browser only.</p>
-                <label style={{fontSize:11,fontWeight:600,color:"var(--muted2)",letterSpacing:"0.5px",textTransform:"uppercase",display:"block",marginBottom:5}}>Anthropic API Key</label>
-                <input style={{...inputStyle,marginBottom:8}} type="password" placeholder="sk-ant-api03-..." value={apiKey} onChange={e=>setApiKey(e.target.value)} onKeyDown={e=>e.key==="Enter"&&apiKey.startsWith("sk-")&&saveKey()}/>
-                <p style={{fontSize:11,color:"var(--muted)",marginBottom:20}}>Get your key at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a></p>
-                <button style={{...btnPrimary,width:"100%",justifyContent:"center",padding:13,fontSize:14}} onClick={saveKey} disabled={!apiKey.startsWith("sk-")}>Launch System →</button>
+                <p style={{color:"var(--muted2)",fontSize:14,marginBottom:28,lineHeight:1.7}}>Enter your API keys to start analyzing mobile game market opportunities across App Store and Google Play.</p>
+
+                <label style={{fontSize:11,fontWeight:600,color:"var(--muted2)",letterSpacing:"0.5px",textTransform:"uppercase",display:"block",marginBottom:5}}>Anthropic API Key <span style={{color:"var(--red)"}}>*</span></label>
+                <input style={{...C.input,marginBottom:6}} type="password" placeholder="sk-ant-api03-..." value={apiKey} onChange={e=>setApiKey(e.target.value)}/>
+                <p style={{fontSize:11,color:"var(--muted)",marginBottom:20}}>Get at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a> — required</p>
+
+                <label style={{fontSize:11,fontWeight:600,color:"var(--muted2)",letterSpacing:"0.5px",textTransform:"uppercase",display:"block",marginBottom:5}}>RapidAPI Key <span style={{color:"var(--muted)"}}>optional</span></label>
+                <input style={{...C.input,marginBottom:6}} type="password" placeholder="your-rapidapi-key..." value={rapidKey} onChange={e=>setRapidKey(e.target.value)}/>
+                <p style={{fontSize:11,color:"var(--muted)",marginBottom:24}}>Free at <a href="https://rapidapi.com/search/google-play-scraper" target="_blank">rapidapi.com</a> — enables Google Play data (500 free req/month)</p>
+
+                <button style={{...C.btn,width:"100%",justifyContent:"center",padding:13,fontSize:14}} onClick={saveKeys} disabled={!apiKey.startsWith("sk-")}>Launch System →</button>
               </div>
             </div>
           )}
@@ -359,49 +485,68 @@ function App(){
           {/* DASHBOARD */}
           {keySaved&&page==="dashboard"&&(
             <div>
-              <div style={{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:800,marginBottom:6,letterSpacing:"-0.5px"}}>Dashboard</div>
-              <div style={{fontSize:13,color:"var(--muted2)",marginBottom:24}}>Mobile games market intelligence — last 90 days · 500K+ installs · 5K+/day</div>
+              <div style={C.pageTitle}>Dashboard</div>
+              <div style={C.pageSub}>Mobile games market intelligence — all categories, no install filter</div>
               {!results?(
                 <div style={{background:"linear-gradient(135deg,rgba(124,92,252,0.08),rgba(6,182,212,0.04))",border:"1px solid rgba(124,92,252,0.2)",borderRadius:12,padding:28,display:"flex",alignItems:"center",justifyContent:"space-between",gap:20}}>
                   <div>
                     <div style={{fontFamily:"'Syne',sans-serif",fontSize:18,fontWeight:700,marginBottom:6}}>No data yet</div>
-                    <p style={{color:"var(--muted2)",fontSize:13}}>Run the pipeline to fetch and analyze trending games</p>
+                    <p style={{color:"var(--muted2)",fontSize:13}}>Run the pipeline to start analyzing trending games</p>
                   </div>
-                  <button style={{...btnPrimary,padding:"13px 28px",fontSize:14,fontWeight:700,whiteSpace:"nowrap"}} onClick={()=>setPage("run")}>▶ Run Pipeline</button>
+                  <button style={{...C.btn,padding:"13px 28px",fontSize:14,fontWeight:700,whiteSpace:"nowrap"}} onClick={()=>setPage("run")}>▶ Run Pipeline</button>
                 </div>
               ):(
                 <>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:16,marginBottom:28}}>
-                    {[["Total Scanned",(results.total_scanned||0).toLocaleString(),"var(--muted2)"],["Analyzed",results.total_analyzed||0,"var(--accent2)"],["Hot Opps",results.hot_count||0,"var(--green)"],["Strong Signals",results.strong_count||0,"#a3e635"]].map(([t,v,c])=>(
-                      <div key={t} style={card}>
+                    {[
+                      ["Total Scanned",(results.total_scanned||0).toLocaleString(),"var(--muted2)"],
+                      ["Analyzed",results.total_analyzed||0,"var(--accent2)"],
+                      ["Hot Opps",results.hot_count||0,"var(--green)"],
+                      ["Strong Signals",results.strong_count||0,"#a3e635"],
+                    ].map(([t,v,c])=>(
+                      <div key={t} style={C.card}>
                         <div style={{fontSize:11,fontWeight:600,color:"var(--muted2)",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>{t}</div>
                         <div style={{fontSize:30,fontWeight:800,fontFamily:"'Syne',sans-serif",color:c,marginBottom:4}}>{v}</div>
                       </div>
                     ))}
                   </div>
-                  {trend.market_summary&&<div style={{background:"linear-gradient(135deg,rgba(124,92,252,0.07),rgba(6,182,212,0.03))",border:"1px solid rgba(124,92,252,0.18)",borderRadius:10,padding:"16px 20px",marginBottom:28,fontSize:14,lineHeight:1.7}}><div style={{fontSize:11,fontWeight:600,color:"var(--accent2)",marginBottom:6,textTransform:"uppercase",letterSpacing:"0.5px"}}>📊 Market Summary</div>{trend.market_summary}</div>}
-                  <div style={secTitle}>🏆 Top Opportunities</div>
+
+                  {!results.has_gplay&&(
+                    <div style={{background:"rgba(234,179,8,0.06)",border:"1px solid rgba(234,179,8,0.2)",borderRadius:10,padding:"12px 16px",marginBottom:20,display:"flex",alignItems:"center",gap:12,fontSize:13}}>
+                      <span>⚠️</span>
+                      <span style={{color:"var(--yellow)"}}>Google Play data not included — add your RapidAPI key in <strong style={{cursor:"pointer",textDecoration:"underline"}} onClick={()=>setPage("settings")}>Settings</strong> to get GP games too.</span>
+                    </div>
+                  )}
+
+                  {trend.market_summary&&(
+                    <div style={{background:"linear-gradient(135deg,rgba(124,92,252,0.07),rgba(6,182,212,0.03))",border:"1px solid rgba(124,92,252,0.18)",borderRadius:10,padding:"16px 20px",marginBottom:28,fontSize:14,lineHeight:1.7}}>
+                      <div style={{fontSize:11,fontWeight:600,color:"var(--accent2)",marginBottom:6,textTransform:"uppercase",letterSpacing:"0.5px"}}>📊 Market Summary</div>
+                      {trend.market_summary}
+                    </div>
+                  )}
+
+                  <div style={C.secTitle}>🏆 Top Opportunities</div>
                   <div style={{overflowX:"auto",marginBottom:20}}>
                     <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                      <thead><tr>{["#","Game","Platform","Score","Label","Action","Summary"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
+                      <thead><tr>{["#","Game","Platform","Score","Label","Action","Summary"].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
                       <tbody>
                         {games.filter(g=>g.analysis).slice(0,10).map((g,i)=>(
                           <tr key={i} style={{cursor:"pointer"}} onClick={()=>{setSelected(g);setPage("opportunities");}}>
-                            <td style={{...td,color:"var(--muted)",fontFamily:"var(--mono)",fontWeight:600}}>{i+1}</td>
-                            <td style={{...td,fontWeight:600,maxWidth:180}}>{g.title}</td>
-                            <td style={td}><Badge type={g.platform==="google_play"?"gp":"ios"}>{g.platform==="google_play"?"GP":"iOS"}</Badge></td>
-                            <td style={{...td,minWidth:100}}><ScoreMeter score={g.composite_score}/></td>
-                            <td style={td}><Badge type={LABEL_CLS[g.analysis.opportunity_label]}>{g.analysis.opportunity_label}</Badge></td>
-                            <td style={td}><Badge type={ACTION_CLS[g.analysis.recommended_action]}>{g.analysis.recommended_action}</Badge></td>
-                            <td style={{...td,fontSize:12,color:"var(--muted2)",maxWidth:250}}>{g.analysis.one_line_summary}</td>
+                            <td style={{...C.td,color:"var(--muted)",fontFamily:"var(--mono)",fontWeight:600}}>{i+1}</td>
+                            <td style={{...C.td,fontWeight:600,maxWidth:180}}>{g.title}</td>
+                            <td style={C.td}><Badge type={g.platform==="google_play"?"gp":"ios"}>{g.platform==="google_play"?"GP":"iOS"}</Badge></td>
+                            <td style={{...C.td,minWidth:100}}><ScoreMeter score={g.composite_score}/></td>
+                            <td style={C.td}><Badge type={LABEL_CLS[g.analysis.opportunity_label]}>{g.analysis.opportunity_label}</Badge></td>
+                            <td style={C.td}><Badge type={ACTION_CLS[g.analysis.recommended_action]}>{g.analysis.recommended_action}</Badge></td>
+                            <td style={{...C.td,fontSize:12,color:"var(--muted2)",maxWidth:250}}>{g.analysis.one_line_summary}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
                   <div style={{display:"flex",gap:10}}>
-                    <button style={btnPrimary} onClick={()=>setPage("opportunities")}>View All →</button>
-                    <button style={{...btnPrimary,background:"var(--bg3)",color:"var(--text)",border:"1px solid var(--border2)"}} onClick={()=>setPage("run")}>↻ Re-run</button>
+                    <button style={C.btn} onClick={()=>setPage("opportunities")}>View All →</button>
+                    <button style={C.btnSec} onClick={()=>setPage("run")}>↻ Re-run Pipeline</button>
                   </div>
                 </>
               )}
@@ -411,28 +556,35 @@ function App(){
           {/* RUN PIPELINE */}
           {keySaved&&page==="run"&&(
             <div>
-              <div style={{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:800,marginBottom:6,letterSpacing:"-0.5px"}}>Run Pipeline</div>
-              <div style={{fontSize:13,color:"var(--muted2)",marginBottom:24}}>Fetch → Filter → Analyze with Claude AI → Build Dashboard</div>
-              <div style={{...card,marginBottom:24}}>
-                <div style={secTitle}>⚙ Filter Configuration</div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14}}>
-                  {[["Max Age (days)","maxAge"],["Min Installs","minInstalls"],["Min Daily","minDaily"]].map(([lbl,key])=>(
-                    <div key={key}>
-                      <label style={{fontSize:11,fontWeight:600,color:"var(--muted2)",letterSpacing:"0.5px",textTransform:"uppercase",display:"block",marginBottom:5}}>{lbl}</label>
-                      <input style={inputStyle} type="number" value={cfg[key]} onChange={e=>setCfg(c=>({...c,[key]:+e.target.value}))}/>
-                    </div>
-                  ))}
+              <div style={C.pageTitle}>Run Pipeline</div>
+              <div style={C.pageSub}>Fetch all games → Claude analyzes every app → Full intelligence report</div>
+
+              <div style={{...C.card,marginBottom:24}}>
+                <div style={{...C.secTitle,marginBottom:14}}>⚙ Configuration</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+                  <div>
+                    <label style={{fontSize:11,fontWeight:600,color:"var(--muted2)",textTransform:"uppercase",letterSpacing:"0.5px",display:"block",marginBottom:5}}>Max Games to Analyze</label>
+                    <input style={C.input} type="number" min="10" max="200" value={maxGames} onChange={e=>setMaxGames(+e.target.value)}/>
+                    <p style={{fontSize:11,color:"var(--muted)",marginTop:4}}>Higher = more data but more API cost. Recommended: 80</p>
+                  </div>
+                  <div style={{background:"var(--bg3)",borderRadius:8,padding:14}}>
+                    <div style={{fontSize:11,fontWeight:600,color:"var(--muted2)",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8}}>Est. API Cost</div>
+                    <div style={{fontSize:20,fontWeight:800,fontFamily:"'Syne',sans-serif",color:"var(--green)"}}>${(maxGames*0.003).toFixed(2)}</div>
+                    <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>~$0.003 per game analyzed</div>
+                  </div>
                 </div>
               </div>
+
               <div style={{background:"linear-gradient(135deg,rgba(124,92,252,0.08),rgba(6,182,212,0.04))",border:"1px solid rgba(124,92,252,0.2)",borderRadius:12,padding:24,display:"flex",alignItems:"center",justifyContent:"space-between",gap:20,marginBottom:24}}>
                 <div>
                   <div style={{fontFamily:"'Syne',sans-serif",fontSize:17,fontWeight:700,marginBottom:5}}>Start Full Pipeline</div>
-                  <p style={{color:"var(--muted2)",fontSize:13}}>App Store + Google Play → enrich → filter → Claude scores each game</p>
+                  <p style={{color:"var(--muted2)",fontSize:13}}>App Store{localStorage.getItem("mi_rapid")?" + Google Play":""} → Claude analyzes ALL {maxGames} games → Dashboard</p>
                 </div>
-                <button style={{...btnPrimary,padding:"13px 28px",fontSize:14,fontWeight:700,whiteSpace:"nowrap",opacity:running?0.6:1}} onClick={runPipeline} disabled={running}>
+                <button style={{...C.btn,padding:"13px 28px",fontSize:14,fontWeight:700,whiteSpace:"nowrap",opacity:running?0.6:1}} onClick={runPipeline} disabled={running}>
                   {running?<><Spinner/>Running...</>:"▶ Start Pipeline"}
                 </button>
               </div>
+
               {steps.length>0&&(
                 <div style={{marginBottom:24}}>
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
@@ -451,8 +603,9 @@ function App(){
                   ))}
                 </div>
               )}
+
               {logs.length>0&&(
-                <div ref={logRef} style={{background:"#080810",border:"1px solid var(--border)",borderRadius:10,padding:14,fontFamily:"var(--mono)",fontSize:11,maxHeight:220,overflowY:"auto"}}>
+                <div ref={logRef} style={{background:"#080810",border:"1px solid var(--border)",borderRadius:10,padding:14,fontFamily:"var(--mono)",fontSize:11,maxHeight:240,overflowY:"auto"}}>
                   {logs.map((l,i)=>(
                     <div key={i} style={{marginBottom:3,lineHeight:1.6,color:l.type==="info"?"#7dd3fc":l.type==="success"?"var(--green)":l.type==="warn"?"var(--yellow)":l.type==="error"?"var(--red)":"var(--muted2)"}}>{l.msg}</div>
                   ))}
@@ -464,8 +617,8 @@ function App(){
           {/* OPPORTUNITIES */}
           {keySaved&&page==="opportunities"&&(
             <div>
-              <div style={{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:800,marginBottom:6,letterSpacing:"-0.5px"}}>Opportunities</div>
-              <div style={{fontSize:13,color:"var(--muted2)",marginBottom:24}}>All qualified games ranked by composite opportunity score</div>
+              <div style={C.pageTitle}>Opportunities</div>
+              <div style={C.pageSub}>All analyzed games ranked by composite opportunity score — click any row for full detail</div>
               {games.length===0?(
                 <div style={{textAlign:"center",padding:"60px 20px",color:"var(--muted2)"}}>
                   <div style={{fontSize:40,marginBottom:12}}>🔍</div>
@@ -475,10 +628,15 @@ function App(){
               ):(
                 <>
                   <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap",alignItems:"center"}}>
-                    {[["Label:",fLabel,setFLabel,["all","Hot Opportunity","Strong Signal","Worth Watching","Saturated","Too Early"]],["Platform:",fPlatform,setFPlatform,[["all","Both"],["google_play","Google Play"],["app_store","App Store"]]],["Action:",fAction,setFAction,["all","Publish Similar Game","Write Content Now","Monitor Weekly","Skip"]],["Sort:",sortBy,setSortBy,[["composite_score","Score"],["installs","Installs"],["daily","Daily"],["rating","Rating"]]]].map(([lbl,val,set,opts])=>(
+                    {[
+                      ["Label:",fLabel,setFLabel,["all","Hot Opportunity","Strong Signal","Worth Watching","Saturated","Too Early"]],
+                      ["Platform:",fPlatform,setFPlatform,[["all","Both"],["google_play","Google Play"],["app_store","App Store"]]],
+                      ["Action:",fAction,setFAction,["all","Publish Similar Game","Write Content Now","Monitor Weekly","Skip"]],
+                      ["Sort:",sortBy,setSortBy,[["composite_score","Score"],["installs","Installs"],["daily","Daily"],["rating","Rating"]]],
+                    ].map(([lbl,val,set,opts])=>(
                       <div key={lbl} style={{display:"flex",alignItems:"center",gap:6}}>
                         <span style={{fontSize:12,color:"var(--muted2)"}}>{lbl}</span>
-                        <select style={selectStyle} value={val} onChange={e=>set(e.target.value)}>
+                        <select style={C.select} value={val} onChange={e=>set(e.target.value)}>
                           {opts.map(o=>Array.isArray(o)?<option key={o[0]} value={o[0]}>{o[1]}</option>:<option key={o} value={o}>{o}</option>)}
                         </select>
                       </div>
@@ -487,20 +645,23 @@ function App(){
                   </div>
                   <div style={{overflowX:"auto"}}>
                     <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                      <thead><tr>{["#","Game","Platform","Category","Installs","Daily","Score","Label","Trend","Action"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
+                      <thead><tr>{["#","Game","Platform","Category","Installs","Daily","Rating","Score","Label","Trend","Action"].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
                       <tbody>
                         {filtered.map((g,i)=>(
-                          <tr key={i} style={{cursor:"pointer"}} onClick={()=>setSelected(g)}>
-                            <td style={{...td,color:"var(--muted)",fontFamily:"var(--mono)",fontWeight:700}}>{i+1}</td>
-                            <td style={{...td,fontWeight:600,maxWidth:180}}>{g.title}</td>
-                            <td style={td}><Badge type={g.platform==="google_play"?"gp":"ios"} style={{fontSize:10}}>{g.platform==="google_play"?"GP":"iOS"}</Badge></td>
-                            <td style={{...td,fontSize:12,color:"var(--muted2)"}}>{g.category}</td>
-                            <td style={{...td,fontFamily:"var(--mono)",fontSize:12}}>{g.installs?fmt(g.installs):"—"}</td>
-                            <td style={{...td,fontFamily:"var(--mono)",fontSize:12}}>{g.daily_installs_est?fmt(g.daily_installs_est)+"/d":"—"}</td>
-                            <td style={{...td,minWidth:90}}><ScoreMeter score={g.composite_score}/></td>
-                            <td style={td}><Badge type={LABEL_CLS[g.analysis?.opportunity_label]} style={{fontSize:10}}>{g.analysis?.opportunity_label}</Badge></td>
-                            <td style={{...td,fontWeight:600,fontSize:12,color:TREND_COLOR[g.analysis?.trend_direction]||"var(--muted2)"}}>{g.analysis?.trend_direction}</td>
-                            <td style={td}><Badge type={ACTION_CLS[g.analysis?.recommended_action]} style={{fontSize:10}}>{g.analysis?.recommended_action}</Badge></td>
+                          <tr key={i} style={{cursor:"pointer"}} onClick={()=>setSelected(g)}
+                            onMouseEnter={e=>e.currentTarget.style.background="rgba(124,92,252,0.04)"}
+                            onMouseLeave={e=>e.currentTarget.style.background=""}>
+                            <td style={{...C.td,color:"var(--muted)",fontFamily:"var(--mono)",fontWeight:700}}>{i+1}</td>
+                            <td style={{...C.td,fontWeight:600,maxWidth:200}}>{g.title}</td>
+                            <td style={C.td}><Badge type={g.platform==="google_play"?"gp":"ios"} style={{fontSize:10}}>{g.platform==="google_play"?"GP":"iOS"}</Badge></td>
+                            <td style={{...C.td,fontSize:12,color:"var(--muted2)"}}>{g.category}</td>
+                            <td style={{...C.td,fontFamily:"var(--mono)",fontSize:12}}>{g.installs?fmt(g.installs):"—"}</td>
+                            <td style={{...C.td,fontFamily:"var(--mono)",fontSize:12}}>{g.daily_installs_est?fmt(g.daily_installs_est)+"/d":"—"}</td>
+                            <td style={{...C.td,fontFamily:"var(--mono)",fontSize:12}}>{g.rating?g.rating.toFixed(1):"—"}</td>
+                            <td style={{...C.td,minWidth:90}}><ScoreMeter score={g.composite_score}/></td>
+                            <td style={C.td}><Badge type={LABEL_CLS[g.analysis?.opportunity_label]} style={{fontSize:10}}>{g.analysis?.opportunity_label}</Badge></td>
+                            <td style={{...C.td,fontWeight:600,fontSize:12,color:TREND_COL[g.analysis?.trend_direction]||"var(--muted2)"}}>{g.analysis?.trend_direction}</td>
+                            <td style={C.td}><Badge type={ACTION_CLS[g.analysis?.recommended_action]} style={{fontSize:10}}>{g.analysis?.recommended_action}</Badge></td>
                           </tr>
                         ))}
                       </tbody>
@@ -514,8 +675,8 @@ function App(){
           {/* TREND RADAR */}
           {keySaved&&page==="trends"&&(
             <div>
-              <div style={{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:800,marginBottom:6,letterSpacing:"-0.5px"}}>Trend Radar</div>
-              <div style={{fontSize:13,color:"var(--muted2)",marginBottom:24}}>Macro market intelligence across all analyzed games</div>
+              <div style={C.pageTitle}>Trend Radar</div>
+              <div style={C.pageSub}>Macro market intelligence across all analyzed games</div>
               {!trend.market_summary?(
                 <div style={{textAlign:"center",padding:"60px 20px",color:"var(--muted2)"}}>
                   <div style={{fontSize:40,marginBottom:12}}>📈</div>
@@ -528,23 +689,23 @@ function App(){
                     <div style={{fontSize:11,fontWeight:600,color:"var(--accent2)",marginBottom:6,textTransform:"uppercase",letterSpacing:"0.5px"}}>Executive Summary</div>
                     {trend.market_summary}
                   </div>
-                  <div style={secTitle}>🔥 Hot Categories</div>
+                  <div style={C.secTitle}>🔥 Hot Categories</div>
                   <div style={{marginBottom:28}}>
                     {(trend.hot_categories||[]).map((c,i)=>(
-                      <div key={i} style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,padding:"10px 14px",background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8}}>
+                      <div key={i} style={{display:"flex",alignItems:"center",gap:12,marginBottom:10,padding:"10px 14px",background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:8,flexWrap:"wrap"}}>
                         <span style={{fontSize:13,fontWeight:600,minWidth:130}}>{c.category}</span>
-                        <Badge type={c.momentum==="Exploding"?"hot":c.momentum==="Rising"?"strong":"watch"} style={{fontSize:10,minWidth:70,justifyContent:"center"}}>{c.momentum}</Badge>
-                        <div style={{flex:1,height:6,background:"var(--bg3)",borderRadius:99,overflow:"hidden"}}>
-                          <div style={{height:"100%",width:`${Math.min(100,((c.avg_daily_installs||0)/50000)*100)}%`,background:TREND_COLOR[c.momentum]||"var(--accent)",borderRadius:99}}/>
+                        <Badge type={c.momentum==="Exploding"?"hot":c.momentum==="Rising"?"strong":"watch"} style={{fontSize:10}}>{c.momentum}</Badge>
+                        <div style={{flex:1,minWidth:100,height:6,background:"var(--bg3)",borderRadius:99,overflow:"hidden"}}>
+                          <div style={{height:"100%",width:`${Math.min(100,((c.avg_daily_installs||0)/50000)*100)}%`,background:TREND_COL[c.momentum]||"var(--accent)",borderRadius:99}}/>
                         </div>
                         <span style={{fontSize:11,color:"var(--muted2)",fontFamily:"var(--mono)",minWidth:65,textAlign:"right"}}>{fmt(c.avg_daily_installs||0)}/day</span>
-                        <span style={{fontSize:12,color:"var(--muted2)",flex:1.5,paddingLeft:12}}>{c.insight}</span>
+                        <span style={{fontSize:12,color:"var(--muted2)",width:"100%",paddingTop:4}}>{c.insight}</span>
                       </div>
                     ))}
                   </div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:24,marginBottom:28}}>
                     <div>
-                      <div style={secTitle}>💡 Emerging Themes</div>
+                      <div style={C.secTitle}>💡 Emerging Themes</div>
                       {(trend.emerging_themes||[]).map((t,i)=>(
                         <div key={i} style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:10,padding:16,marginBottom:12}}>
                           <div style={{fontSize:10,fontWeight:700,color:"var(--accent2)",textTransform:"uppercase",letterSpacing:"0.6px",marginBottom:6}}>Theme</div>
@@ -555,7 +716,7 @@ function App(){
                       ))}
                     </div>
                     <div>
-                      <div style={secTitle}>🎯 Market Gaps</div>
+                      <div style={C.secTitle}>🎯 Market Gaps</div>
                       {(trend.market_gaps||[]).map((g,i)=>(
                         <div key={i} style={{background:"var(--bg2)",border:"1px solid rgba(124,92,252,0.15)",borderRadius:10,padding:16,marginBottom:12}}>
                           <div style={{fontSize:10,fontWeight:700,color:"var(--cyan)",textTransform:"uppercase",letterSpacing:"0.6px",marginBottom:6}}>Gap</div>
@@ -566,7 +727,7 @@ function App(){
                       ))}
                     </div>
                   </div>
-                  <div style={secTitle}>👥 Audience & Platform</div>
+                  <div style={C.secTitle}>👥 Audience & Platform</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
                     {[["Audience Shifts",trend.audience_shifts],["Platform Differences",trend.platform_differences]].map(([title,body])=>(
                       <div key={title} style={{background:"var(--bg2)",border:"1px solid var(--border)",borderRadius:10,padding:16}}>
@@ -583,8 +744,8 @@ function App(){
           {/* KEYWORDS */}
           {keySaved&&page==="keywords"&&(
             <div>
-              <div style={{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:800,marginBottom:6,letterSpacing:"-0.5px"}}>Keyword Gaps</div>
-              <div style={{fontSize:13,color:"var(--muted2)",marginBottom:24}}>Market-wide trending keywords and per-game ASO opportunities</div>
+              <div style={C.pageTitle}>Keyword Gaps</div>
+              <div style={C.pageSub}>Market-wide trending keywords and per-game ASO opportunities</div>
               {!results?(
                 <div style={{textAlign:"center",padding:"60px 20px",color:"var(--muted2)"}}>
                   <div style={{fontSize:40,marginBottom:12}}>🔑</div>
@@ -593,23 +754,23 @@ function App(){
                 </div>
               ):(
                 <>
-                  <div style={secTitle}>📌 Trending Keywords</div>
+                  <div style={C.secTitle}>📌 Market-Wide Trending Keywords</div>
                   <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:32}}>
                     {(trend.keyword_trends||[]).map((kw,i)=><KwTag key={i} primary>{kw}</KwTag>)}
                   </div>
-                  <div style={secTitle}>🎮 Per-Game ASO Keywords</div>
+                  <div style={C.secTitle}>🎮 Per-Game ASO Keywords</div>
                   <div style={{overflowX:"auto"}}>
                     <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                      <thead><tr>{["Game","Platform","Category","Score","Label","Keywords"].map(h=><th key={h} style={th}>{h}</th>)}</tr></thead>
+                      <thead><tr>{["Game","Platform","Category","Score","Label","Keywords"].map(h=><th key={h} style={C.th}>{h}</th>)}</tr></thead>
                       <tbody>
                         {games.filter(g=>g.analysis?.aso_keywords?.length).map((g,i)=>(
                           <tr key={i} style={{cursor:"pointer"}} onClick={()=>{setSelected(g);setPage("opportunities");}}>
-                            <td style={{...td,fontWeight:600}}>{g.title}</td>
-                            <td style={td}><Badge type={g.platform==="google_play"?"gp":"ios"} style={{fontSize:10}}>{g.platform==="google_play"?"GP":"iOS"}</Badge></td>
-                            <td style={{...td,fontSize:12,color:"var(--muted2)"}}>{g.category}</td>
-                            <td style={td}><span style={{fontFamily:"var(--mono)",fontWeight:700,color:scoreColor(g.composite_score)}}>{g.composite_score}</span></td>
-                            <td style={td}><Badge type={LABEL_CLS[g.analysis.opportunity_label]} style={{fontSize:10}}>{g.analysis.opportunity_label}</Badge></td>
-                            <td style={td}><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{g.analysis.aso_keywords.map((kw,j)=><KwTag key={j} primary={j<3}>{kw}</KwTag>)}</div></td>
+                            <td style={{...C.td,fontWeight:600}}>{g.title}</td>
+                            <td style={C.td}><Badge type={g.platform==="google_play"?"gp":"ios"} style={{fontSize:10}}>{g.platform==="google_play"?"GP":"iOS"}</Badge></td>
+                            <td style={{...C.td,fontSize:12,color:"var(--muted2)"}}>{g.category}</td>
+                            <td style={C.td}><span style={{fontFamily:"var(--mono)",fontWeight:700,color:scoreColor(g.composite_score)}}>{g.composite_score}</span></td>
+                            <td style={C.td}><Badge type={LABEL_CLS[g.analysis.opportunity_label]} style={{fontSize:10}}>{g.analysis.opportunity_label}</Badge></td>
+                            <td style={C.td}><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{g.analysis.aso_keywords.map((kw,j)=><KwTag key={j} primary={j<3}>{kw}</KwTag>)}</div></td>
                           </tr>
                         ))}
                       </tbody>
@@ -622,29 +783,48 @@ function App(){
 
           {/* SETTINGS */}
           {keySaved&&page==="settings"&&(
-            <div style={{maxWidth:500}}>
-              <div style={{fontFamily:"'Syne',sans-serif",fontSize:24,fontWeight:800,marginBottom:6,letterSpacing:"-0.5px"}}>Settings</div>
-              <div style={{fontSize:13,color:"var(--muted2)",marginBottom:24}}>API key and data management</div>
-              <div style={{...card,marginBottom:16}}>
-                <div style={secTitle}>🔑 API Key</div>
-                <label style={{fontSize:11,fontWeight:600,color:"var(--muted2)",letterSpacing:"0.5px",textTransform:"uppercase",display:"block",marginBottom:5}}>Anthropic API Key</label>
-                <input style={{...inputStyle,marginBottom:14}} type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)}/>
+            <div style={{maxWidth:520}}>
+              <div style={C.pageTitle}>Settings</div>
+              <div style={C.pageSub}>API keys and data management</div>
+
+              <div style={{...C.card,marginBottom:16}}>
+                <div style={{...C.secTitle,marginBottom:14}}>🔑 Anthropic API Key</div>
+                <input style={{...C.input,marginBottom:14}} type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)}/>
+                <p style={{fontSize:11,color:"var(--muted)",marginBottom:14}}>Get at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a></p>
                 <div style={{display:"flex",gap:10}}>
-                  <button style={btnPrimary} onClick={saveKey}>Save Key</button>
-                  <button style={btnDanger} onClick={()=>{localStorage.removeItem("mi_key");setApiKey("");setKeySaved(false);}}>Remove Key</button>
+                  <button style={C.btn} onClick={saveKeys}>Save</button>
+                  <button style={C.btnDanger} onClick={()=>{localStorage.removeItem("mi_key");setApiKey("");setKeySaved(false);}}>Remove</button>
                 </div>
               </div>
-              <div style={{...card,marginBottom:16}}>
-                <div style={secTitle}>🗑 Data</div>
-                <p style={{fontSize:13,color:"var(--muted2)",marginBottom:14}}>Clear stored results to start fresh.</p>
-                <button style={btnDanger} onClick={()=>{localStorage.removeItem("mi_results");setResults(null);setPage("dashboard");}}>Clear All Results</button>
+
+              <div style={{...C.card,marginBottom:16}}>
+                <div style={{...C.secTitle,marginBottom:14}}>🎮 RapidAPI Key (Google Play)</div>
+                <input style={{...C.input,marginBottom:8}} type="password" placeholder="your-rapidapi-key..." value={rapidKey} onChange={e=>setRapidKey(e.target.value)}/>
+                <p style={{fontSize:11,color:"var(--muted)",marginBottom:14}}>
+                  Free 500 req/month at <a href="https://rapidapi.com/search/google-play-scraper" target="_blank">rapidapi.com</a> → search "Google Play Scraper" → subscribe free → copy API key
+                </p>
+                <button style={C.btn} onClick={saveKeys}>Save</button>
               </div>
-              <div style={card}>
-                <div style={secTitle}>ℹ System</div>
-                {[["Model","claude-sonnet-4-6"],["Sources","App Store RSS · iTunes API · Google Play"],["Storage","Browser localStorage only"],["Criteria","Last 90 days · 500K+ installs · 5K+/day"],["Cost/run","~$0.10–$0.30"]].map(([k,v])=>(
-                  <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid var(--border)",fontSize:13}}>
-                    <span style={{color:"var(--muted2)"}}>{k}</span>
-                    <span style={{fontFamily:k==="Model"?"var(--mono)":"inherit",fontSize:k==="Model"?12:13}}>{v}</span>
+
+              <div style={{...C.card,marginBottom:16}}>
+                <div style={{...C.secTitle,marginBottom:12}}>🗑 Data</div>
+                <p style={{fontSize:13,color:"var(--muted2)",marginBottom:14}}>Clear stored results to start fresh.</p>
+                <button style={C.btnDanger} onClick={()=>{localStorage.removeItem("mi_results");setResults(null);setPage("dashboard");}}>Clear All Results</button>
+              </div>
+
+              <div style={C.card}>
+                <div style={{...C.secTitle,marginBottom:12}}>ℹ System Info</div>
+                {[
+                  ["Model","claude-sonnet-4-6"],
+                  ["iOS Source","iTunes RSS + iTunes Lookup API (free)"],
+                  ["GP Source","RapidAPI Google Play Scraper (500 free/month)"],
+                  ["Analysis","All fetched games — no install filter"],
+                  ["Storage","Browser localStorage only"],
+                  ["Cost/run","~$0.003 per game analyzed"],
+                ].map(([k,v])=>(
+                  <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:"1px solid var(--border)",fontSize:13,gap:12}}>
+                    <span style={{color:"var(--muted2)",flexShrink:0}}>{k}</span>
+                    <span style={{fontFamily:k==="Model"?"var(--mono)":"inherit",fontSize:k==="Model"?12:13,textAlign:"right"}}>{v}</span>
                   </div>
                 ))}
               </div>
@@ -657,10 +837,10 @@ function App(){
       {/* Footer */}
       <div style={{borderTop:"1px solid var(--border)",background:"var(--bg2)",padding:"14px 24px",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
         <span style={{fontSize:12,color:"var(--muted)",letterSpacing:"0.3px"}}>Developed by</span>
-        <span style={{fontSize:12,fontWeight:700,fontFamily:"'Syne',sans-serif",background:"linear-gradient(90deg,#a78bfa,#06b6d4)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Muhammad Asif</span>
+        <a href="https://wa.me/923080698520" target="_blank" rel="noreferrer" style={{fontSize:12,fontWeight:700,fontFamily:"'Syne',sans-serif",background:"linear-gradient(90deg,#a78bfa,#06b6d4)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",textDecoration:"none"}}>Muhammad Asif</a>
       </div>
 
-      {/* GAME DETAIL MODAL */}
+      {/* MODAL */}
       {selected&&(
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}} onClick={()=>setSelected(null)}>
           <div style={{background:"var(--bg2)",border:"1px solid var(--border2)",borderRadius:16,width:"100%",maxWidth:680,maxHeight:"88vh",overflowY:"auto",padding:28}} onClick={e=>e.stopPropagation()}>
@@ -689,7 +869,14 @@ function App(){
                   <div style={{fontSize:11,color:"var(--muted2)",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:8}}>Composite Score</div>
                   <ScoreMeter score={selected.composite_score} size="lg"/>
                 </div>
-                {[["Why This Opportunity",selected.analysis.why_opportunity,null],["Target Audience",selected.analysis.target_audience,null],["Monetization Model",selected.analysis.monetization_model,null],["Content Angle",selected.analysis.content_angle,"var(--accent2)"],["Competitor Gap",selected.analysis.competitor_gap,null],["Risk Factors",selected.analysis.risk_factors,"var(--yellow)"]].map(([label,value,color])=>(
+                {[
+                  ["Why This Opportunity",selected.analysis.why_opportunity,null],
+                  ["Target Audience",selected.analysis.target_audience,null],
+                  ["Monetization Model",selected.analysis.monetization_model,null],
+                  ["Content Angle",selected.analysis.content_angle,"var(--accent2)"],
+                  ["Competitor Gap",selected.analysis.competitor_gap,null],
+                  ["Risk Factors",selected.analysis.risk_factors,"var(--yellow)"],
+                ].map(([label,value,color])=>(
                   <div key={label} style={{marginBottom:14}}>
                     <div style={{fontSize:11,color:"var(--muted2)",fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:4}}>{label}</div>
                     <p style={{fontSize:13,lineHeight:1.7,color:color||"var(--text)"}}>{value}</p>
